@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: inventory_db
       POSTGRES_USER: inventory_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-inventory_pass}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib diisi}
     volumes:
       - inventory_pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -16,20 +16,23 @@ services:
       retries: 5
 
   app:
-    image: ghcr.io/armandaniswara/inventory-app:latest
+    image: ${APP_IMAGE:-ghcr.io/armandaniswara/inventory-cicd-docker:latest}
     container_name: inventory-app
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "8085:8080"
     environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/config/
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/inventory_db
       SPRING_DATASOURCE_USERNAME: inventory_user
-      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-inventory_pass}
-      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
-      JAVA_OPTS: "-Xms256m -Xmx512m"
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD wajib diisi}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+    volumes:
+      - ./config:/app/config:ro
 
 volumes:
   inventory_pg_data:

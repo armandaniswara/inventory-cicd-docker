@@ -6,3 +6,6 @@ target/
 .vscode/
 .DS_Store
 HELP.md
+
+# config lokal: sumbernya deployment/config/application-dev.yml (jangan di-commit)
+src/main/resources/application.yml
