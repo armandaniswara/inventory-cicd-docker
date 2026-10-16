@@ -1,12 +1,13 @@
 name: CI/CD
 
-# PR  -> build + test saja (verifikasi)
-# push ke main (hasil merge PR) -> build + test, push image, lalu deploy
+# PR   -> build + test saja (verifikasi)
+# push ke dev  -> build + test, push image, lalu deploy ke server
+# push ke main -> build + test + push image (belum deploy)
 on:
   pull_request:
     branches: [ "main", "dev" ]
   push:
-    branches: [ "main" ]
+    branches: [ "main", "dev" ]
 
 permissions:
   contents: read
@@ -47,7 +48,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          # image hanya di-push saat merge ke main; di PR cukup di-build sebagai smoke test
+          # image di-push saat push ke main/dev; di PR cukup di-build sebagai smoke test
           push: ${{ github.event_name == 'push' }}
           tags: |
             ${{ env.IMAGE }}:latest
@@ -55,7 +56,7 @@ jobs:
 
   deploy:
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -70,7 +71,7 @@ jobs:
           key: ${{ secrets.DEPLOY_KEY }}
           port: ${{ secrets.DEPLOY_PORT }}
           source: "deployment/deployment.yml,deployment/config/application-dev.yml"
-          target: "/opt/inventory-app"
+          target: "/home/armen/inventory-app"
           strip_components: 1
 
       - name: Deploy on server
@@ -86,7 +87,7 @@ jobs:
           envs: DB_PASSWORD,APP_IMAGE
           script: |
             set -e
-            cd /opt/inventory-app
+            cd /home/armen/inventory-app
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose -f deployment.yml pull
             docker compose -f deployment.yml up -d
