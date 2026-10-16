@@ -1,10 +1,19 @@
 name: CI/CD
 
+# PR  -> build + test saja (verifikasi)
+# push ke main (hasil merge PR) -> build + test, push image, lalu deploy
 on:
+  pull_request:
+    branches: [ "main", "dev" ]
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   build:
@@ -20,58 +29,65 @@ jobs:
           java-version: "17"
           cache: "maven"
 
-      - name: Cache Maven packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2
-          key: maven-${{ runner.os }}-${{ hashFiles('pom.xml') }}
-          restore-keys: |
-            maven-${{ runner.os }}-
+      - name: Build and test
+        run: ./mvnw clean verify
 
-      - name: Build and test with Maven
-        run: ./mvnw clean install -DskipTests
-
-      - name: Run tests
-        run: ./mvnw test
-
-      - name: Build Docker image
-        buildkit: true
-        run: |
-          docker build -t ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:${{ github.sha }} .
-          docker build -t ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:latest .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push Docker image
-        run: |
-          docker push ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:${{ github.sha }}
-          docker push ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:latest
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # image hanya di-push saat merge ke main; di PR cukup di-build sebagai smoke test
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
 
   deploy:
     needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     steps:
-      - name: Deploy to server
-        uses: appleboy/scp-action@v0.1.5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Kirim compose + config ke server. Tambahkan file di sini bila config/ bertambah.
+      - name: Copy deployment files to server
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
-          port: 22
+          port: ${{ secrets.DEPLOY_PORT }}
+          source: "deployment/deployment.yml,deployment/config/application-dev.yml"
+          target: "/opt/inventory-app"
+          strip_components: 1
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          APP_IMAGE: ${{ env.IMAGE }}:latest
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          envs: DB_PASSWORD,APP_IMAGE
           script: |
-            docker pull ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:latest
-            docker stop inventory-app || true
-            docker rm inventory-app || true
-            docker run -d --name inventory-app --restart unless-stopped
-              -p 8080:8080
-              -e SPRING_DATASOURCE_URL=jdbc:postgresql://${{ secrets.DB_HOST }}:5432/inventory_db
-              -e SPRING_DATASOURCE_USERNAME=inventory_user
-              -e SPRING_DATASOURCE_PASSWORD=${{ secrets.DB_PASSWORD }}
-              -e SPRING_JPA_HIBERNATE_DDL_AUTO=validate
-              ghcr.io/${{ github.repository_owner }}/${{ github.repository }}:latest
+            set -e
+            cd /opt/inventory-app
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker compose -f deployment.yml pull
+            docker compose -f deployment.yml up -d
+            docker image prune -f
